@@ -29,6 +29,13 @@ class ElectionCalculator:
         local_support = [s * dev for s, dev in zip(support, local_support_deviation)]
         if constituency.number == 21:  # Zachowujemy wsparcie dla MN w Opolu
             local_support.append(5.37)
+        if constituency.number == 32:
+            for i, committee in enumerate(self.committees):
+                if committee.id == 'nl':
+                    cap = 1.8 * support[i]
+                    if local_support[i] > cap:
+                        local_support[i] = cap
+                    break
         return local_support
 
     def calculate_mandates(self, support):
