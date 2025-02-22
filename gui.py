@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtSvgWidgets import QSvgWidget
+from sympy.codegen.ast import continue_
 
 from models import Committee
 from data_loader import load_constituencies
@@ -30,7 +31,7 @@ class ElectionApp(QMainWindow):
 
         # Definicja komitetów
         self.committees = [
-            Committee('td', 'Trzecia Droga', 8, [['td', 1]]),
+            Committee('td', 'Trzecia Droga', 5, [['td', 1]]),
             Committee('nl', 'Lewica', 5, [['nl', 1]]),
             Committee('pis', 'Prawo i Sprawiedliwość', 5, [['pis', 1]]),
             Committee('konf', 'Konfederacja', 5, [['konf', 1]]),
@@ -66,6 +67,27 @@ class ElectionApp(QMainWindow):
             slider = QSlider(Qt.Horizontal)
             slider.setRange(0, 1000)  # 0.0% - 100.0% (krok 0.1%)
             slider.setValue(200)      # domyślnie 20%
+            slider.setFixedHeight(30)
+
+            color = self.colors[committee.id]
+
+            slider.setStyleSheet(
+                f"""
+                QSlider::groove:horizontal {{
+                    height: 6px;
+                    background: {color};
+                    margin: 0px;
+                    border-radius: 3px;
+                }}
+                QSlider::handle:horizontal {{
+                    background: {color};
+                    border: 1px solid #5c5c5c;
+                    width: 16px;
+                    margin: -5px 0;
+                    border-radius: 8px;
+                }}
+                """
+            )
 
             entry = QLineEdit("20.0")
             entry.setFixedWidth(50)
@@ -78,7 +100,7 @@ class ElectionApp(QMainWindow):
             # Podpięcie sygnałów
             slider.valueChanged.connect(lambda val, i=idx: self.handle_slider_change(i, val))
             entry.editingFinished.connect(lambda i=idx: self.handle_entry_finished(i))
-            threshold_combo.currentIndexChanged.connect(self.update_mandates)
+            threshold_combo.currentIndexChanged.connect(lambda index, i=idx: self.handle_threshold_change(i, index))
 
             row_widget = QWidget()
             row_layout = QHBoxLayout(row_widget)
@@ -91,6 +113,11 @@ class ElectionApp(QMainWindow):
             self.support_sliders.append(slider)
             self.support_entries.append(entry)
             self.threshold_combos.append(threshold_combo)
+
+        self.method_combo = QComboBox()  # [ZM]
+        self.method_combo.addItems(["dHondt", "SainteLague"])  # [ZM]
+        self.method_combo.currentIndexChanged.connect(lambda: self.update_mandates())  # [ZM]
+        self.form_layout.addRow(QLabel("Metoda obliczania mandatów:"), self.method_combo)  # [ZM]
 
         # --- Sekcja Donut Chart (kolumna 1, wiersz 0) ---
         self.donut_chart_container = QWidget()
@@ -108,32 +135,27 @@ class ElectionApp(QMainWindow):
         self.main_layout.addWidget(self.map_widget, 1, 0)
 
         # --- Sekcja Szczegóły okręgów (kolumna 1, wiersz 1) ---
+        # W sekcji Szczegóły okręgów (kolumna 1, wiersz 1)
+        self.details_container = QWidget()
+        self.details_layout = QVBoxLayout(self.details_container)
         self.constituency_list = QListWidget()
         for constituency in self.constituencies:
             self.constituency_list.addItem(f"Okręg {constituency.number} ({constituency.size} mandatów)")
         self.constituency_list.itemSelectionChanged.connect(self.show_constituency_details)
-
-        self.show_all_button = QPushButton("Pokaż szczegóły wszystkich okręgów")
-        self.show_all_button.clicked.connect(self.show_all_constituency_details)
-
-        self.details_text = QTextEdit("Wybierz okręg lub naciśnij przycisk, aby zobaczyć szczegóły")
+        self.details_text = QTextEdit("Wybierz okręg, aby zobaczyć szczegółowy wykres mandatów")
         self.details_text.setReadOnly(True)
-
-        self.details_container = QWidget()
-        self.details_layout = QVBoxLayout(self.details_container)
         self.details_layout.addWidget(self.constituency_list)
-        self.details_layout.addWidget(self.show_all_button)
         self.details_layout.addWidget(self.details_text)
-
         self.main_layout.addWidget(self.details_container, 1, 1)
 
-        # --- Sekcja Mandaty ogólne (kolumna 2, wiersz 1) ---
-        self.result_label = QLabel("Mandaty ogólne pojawią się po przesunięciu suwaków")
-        self.result_container = QWidget()
-        self.result_layout = QVBoxLayout(self.result_container)
-        self.result_layout.addWidget(self.result_label)
-
-        self.main_layout.addWidget(self.result_container, 1, 2)
+        self.coalitions_container = QWidget()
+        self.coalitions_layout = QVBoxLayout(self.coalitions_container)
+        self.coalitions_label = QLabel("Potencjalne koalicje:")
+        self.coalitions_text = QTextEdit()
+        self.coalitions_text.setReadOnly(True)
+        self.coalitions_layout.addWidget(self.coalitions_label)
+        self.coalitions_layout.addWidget(self.coalitions_text)
+        self.main_layout.addWidget(self.coalitions_container, 1, 2)
 
         # Timer do opóźnionego przeliczania
         self.debounce_timer = QTimer()
@@ -143,6 +165,7 @@ class ElectionApp(QMainWindow):
 
         self.donut_canvas = None
         self.bar_canvas = None
+        self.constituency_canvas = None
 
         QTimer.singleShot(0, self.calculate_mandates)
 
@@ -196,12 +219,8 @@ class ElectionApp(QMainWindow):
                             self.support_entries[i].blockSignals(False)
                 total_support = sum(support)  # Powinno wynosić 100%
 
-            mandates = self.calculator.calculate_mandates(support)
-
-            result_text = "Mandaty ogólne:\n"
-            for i, committee in enumerate(self.committees):
-                result_text += f"{committee.name}: {mandates[i]}\n"
-            self.result_label.setText(result_text)
+            method = self.method_combo.currentText()  # [ZM]
+            mandates = self.calculator.calculate_mandates(support, method=method)  # [ZM]
 
             if self.constituency_list.currentRow() == -1:
                 self.constituency_list.setCurrentRow(0)
@@ -209,6 +228,8 @@ class ElectionApp(QMainWindow):
             self.show_donut_chart(mandates)
             self.show_bar_chart()
             self.color_map()
+
+            self.update_coalitions_widget(mandates)
 
         except ValueError:
             QMessageBox.critical(self, "Błąd", "Wpisz poprawne wartości numeryczne!")
@@ -219,13 +240,25 @@ class ElectionApp(QMainWindow):
             self.donut_canvas.deleteLater()
             self.donut_canvas = None
 
-        fig, ax = plt.subplots(figsize=(6, 5))
+        fig, ax = plt.subplots(figsize=(5, 4), constrained_layout=True)
+
+        short_name_mapping = {
+            "Trzecia Droga": "TD",
+            "Lewica": "NL",
+            "Konfederacja": "KONF",
+            "Koalicja Obywatelska": "KO",
+            "Prawo i Sprawiedliwość": "PiS"
+        }
+
         all_labels = [committee.name for committee in self.committees]
         all_colors = ['#FFFF00', '#FF0000', '#000080', '#8B4513', '#FFA500']
         all_explode = [0.1 if m > 0 else 0 for m in mandates]
 
         indices = [i for i, m in enumerate(mandates) if m > 0]
-        labels = [all_labels[i] for i in indices]
+        labels = [
+            f"{short_name_mapping.get(self.committees[i].name, self.committees[i].name)} ({mandates[i]})"
+            for i in indices
+        ]
         colors = [all_colors[i] for i in indices]
         explode = [all_explode[i] for i in indices]
         data = [mandates[i] for i in indices]
@@ -246,6 +279,8 @@ class ElectionApp(QMainWindow):
             text.set_fontsize(10)
             text.set_fontweight('bold')
 
+        ax.set_title("Podział mandatów")
+
         self.donut_canvas = FigureCanvas(fig)
         self.donut_chart_layout.addWidget(self.donut_canvas)
         plt.close(fig)
@@ -256,8 +291,19 @@ class ElectionApp(QMainWindow):
             self.bar_canvas.deleteLater()
             self.bar_canvas = None
 
+        short_name_mapping = {
+            "Trzecia Droga": "TD",
+            "Lewica": "NL",
+            "Konfederacja": "KONF",
+            "Koalicja Obywatelska": "KO",
+            "Prawo i Sprawiedliwość": "PiS"
+        }
+
         fig, ax = plt.subplots(figsize=(6, 5))
-        party_names = [committee.name for committee in self.committees]
+        party_names = [
+            short_name_mapping.get(committee.name, committee.name)
+            for committee in self.committees
+        ]
         support = [float(entry.text().replace(',', '.')) for entry in self.support_entries]
         colors = [self.colors[committee.id] for committee in self.committees]
         data = sorted(zip(support, party_names, colors), key=lambda x: x[0], reverse=True)
@@ -280,20 +326,93 @@ class ElectionApp(QMainWindow):
         self.bar_chart_layout.addWidget(self.bar_canvas)
         plt.close(fig)
 
-    def show_constituency_details(self):
+    def show_constituency_chart(self):
+        # Pobieramy zaznaczony okręg
         selected_items = self.constituency_list.selectedItems()
         if not selected_items:
             return
         index = self.constituency_list.row(selected_items[0])
         constituency = self.constituencies[index]
         if not constituency.mandates:
+            # Jeśli nie obliczono mandatów, czyścimy wykres
+            if hasattr(self, 'constituency_canvas'):
+                self.constituency_chart_layout.removeWidget(self.constituency_canvas)
+                self.constituency_canvas.deleteLater()
+                self.constituency_canvas = None
             self.details_text.setText("Przesuń suwaki, aby obliczyć mandaty!")
             return
-        details = f"Okręg {constituency.number} ({constituency.size} mandatów):\n"
-        for i, committee in enumerate(self.committees):
-            details += f"{committee.name}: {constituency.mandates[i]} mandatów\n"
-        details += f"\nDokładne wyniki wsparcia lokalnego: {constituency.support}\n"
-        self.details_text.setText(details)
+
+        short_name_mapping = {
+            "Trzecia Droga": "TD",
+            "Lewica": "NL",
+            "Konfederacja": "KONF",
+            "Koalicja Obywatelska": "KO",
+            "Prawo i Sprawiedliwość": "PiS"
+        }
+
+        # Filtrujemy partie, które zdobyły co najmniej 1 mandat
+        data = []
+        national_support = []
+        for entry in self.support_entries:
+            try:
+                val = float(entry.text().replace(',', '.'))
+            except ValueError:
+                val = 0.0
+            national_support.append(val)
+
+        # Przygotowujemy dane – dla każdej partii, która zdobyła co najmniej 1 mandat
+        for idx, (committee, mandates) in enumerate(zip(self.committees, constituency.mandates)):
+            if mandates > 0:
+                short_name = short_name_mapping.get(committee.name, committee.name)
+                # Zakładamy, że constituency.support jest listą poparcia lokalnego dla każdej partii
+                local_support = constituency.support[idx] if hasattr(constituency, 'support') and len(
+                    constituency.support) > idx else 0.0
+                nat_support = national_support[idx] if len(national_support) > idx else 0.0
+                data.append((short_name, mandates, local_support, nat_support, self.colors[committee.id]))
+
+        if not data:
+            self.details_text.setText("Żadna partia nie przekroczyła progu wyborczego w tym okręgu!")
+            return
+
+        data_sorted = sorted(data, key=lambda x: (x[1], x[2], x[3]), reverse=True)
+        party_names, mandates_values, _, _, colors = zip(*data_sorted)
+
+        # Przygotowujemy wykres słupkowy
+        fig, ax = plt.subplots(figsize=(6, 4))
+        bars = ax.bar(party_names, mandates_values, color=colors)
+        ax.set_ylabel("Liczba mandatów")
+        ax.set_ylim(0, max(mandates_values) + 1)
+        ax.set_title(f"Okręg {constituency.number} - Mandaty")
+        ax.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
+        ax.tick_params(axis='x', labelsize=12)
+        fig.tight_layout()
+
+        for bar in bars:
+            height = bar.get_height()
+            ax.annotate(f'{int(height)}',
+                        xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 3), textcoords="offset points",
+                        ha='center', va='bottom')
+
+        # Jeśli wcześniej był wyświetlany wykres, usuwamy go
+        if hasattr(self, 'constituency_canvas') and self.constituency_canvas is not None:
+            self.details_layout.removeWidget(self.constituency_canvas)
+            self.constituency_canvas.deleteLater()
+            self.constituency_canvas = None
+
+        # Tworzymy nowy canvas i dodajemy go do layoutu obszaru szczegółów
+        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+        self.constituency_canvas = FigureCanvas(fig)
+        # Jeśli używasz widgetu QTextEdit (self.details_text) do wyświetlania tekstu,
+        # możesz chcieć utworzyć nowy kontener (np. QWidget z layoutem) na wykres
+        # i dodać go poniżej lub zamiast tekstu.
+        # Dla uproszczenia zakładamy, że chcesz zastąpić tekst wykresem:
+        self.details_text.hide()  # ukrywamy pole tekstowe
+        self.details_layout.addWidget(self.constituency_canvas)
+        plt.close(fig)
+
+    def show_constituency_details(self):
+        self.show_constituency_chart()
 
     def show_all_constituency_details(self):
         details = ""
@@ -329,3 +448,82 @@ class ElectionApp(QMainWindow):
                 winner_id = self.committees[winner_index].id
                 winners[constituency.number] = winner_id
         return winners
+
+    def update_coalitions_widget(self, mandates):
+        from itertools import combinations
+
+        # Przygotowujemy mapowanie pełnych nazw na skróty (tak jak w innych miejscach)
+        short_name_mapping = {
+            "Trzecia Droga": "TD",
+            "Lewica": "NL",
+            "Konfederacja": "KONF",
+            "Koalicja Obywatelska": "KO",
+            "Prawo i Sprawiedliwość": "PiS"
+        }
+
+        # Pobieramy krajowe poparcie dla każdej partii (zakładamy, że kolejność jest zgodna)
+        national_support = []
+        for entry in self.support_entries:
+            try:
+                val = float(entry.text().replace(',', '.'))
+            except ValueError:
+                val = 0.0
+            national_support.append(val)
+
+        coalitions = []
+        n = len(self.committees)
+        indices = list(range(n))
+
+        # Przeglądamy wszystkie kombinacje (od 1 do n partii)
+        for r in range(1, n + 1):
+            for subset in combinations(indices, r):
+                subset_ids = [self.committees[i].id for i in subset]
+                if 'pis' in subset_ids and 'ko' in subset_ids:
+                    continue
+                if 'nl' in subset_ids and 'konf' in subset_ids:
+                    continue
+                if 'nl' in subset_ids and 'pis' in subset_ids:
+                    continue
+                total = sum(mandates[i] for i in subset)
+                if total >= 231:
+                    # Dla każdej partii w koalicji zbieramy: skrót nazwy, liczbę mandatów,
+                    # lokalne poparcie (jeśli dostępne, zakładamy, że constituency.support nie jest tutaj dostępne)
+                    # oraz krajowe poparcie.
+                    coalition_data = []
+                    for i in subset:
+                        abbr = short_name_mapping.get(self.committees[i].name, self.committees[i].name)
+                        coalition_data.append((abbr, mandates[i], national_support[i]))
+                    # Sortujemy partie w koalicji – najpierw według mandatów, potem krajowego poparcia
+                    coalition_data.sort(key=lambda x: (x[1], x[2]), reverse=True)
+                    if len(subset) == 1:
+                        coalition_str = f"Samodzielna większość: {coalition_data[0][0]} ({coalition_data[0][1]})"
+                    else:
+                        coalition_str = "Koalicja: " + "+".join(f"{abbr}({mand})" for abbr, mand, _ in coalition_data)
+                        coalition_str += f" = {total}"
+                    coalitions.append((total, coalition_str))
+        # Sortujemy wszystkie koalicje malejąco według sumy mandatów
+        coalitions.sort(key=lambda x: x[0], reverse=True)
+
+        # Usuwamy duplikaty – jeżeli te same partie pojawiły się w koalicji (choć przy kombinacjach nie powinno być powtórzeń)
+        unique_coalitions = []
+        seen = set()
+        for total, coalition_str in coalitions:
+            if coalition_str not in seen:
+                seen.add(coalition_str)
+                unique_coalitions.append(coalition_str)
+
+        # Łączymy wynik w jeden tekst (każda kombinacja w nowej linii)
+        result_text = "\n".join(unique_coalitions)
+        if not result_text:
+            result_text = "Brak koalicji dających większość"
+        self.coalitions_text.setText(result_text)
+
+    def handle_threshold_change(self, i, index):
+        # Pobranie wartości z comboboxa (np. "5%" lub "8%")
+        new_threshold_str = self.threshold_combos[i].currentText()
+        new_threshold = int(new_threshold_str.replace("%", ""))
+        # Zakładamy, że obiekt Committee posiada atrybut threshold
+        self.committees[i].threshold = new_threshold
+        # Aktualizacja przeliczenia mandatów
+        self.update_mandates()
+
