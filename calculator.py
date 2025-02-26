@@ -1,5 +1,5 @@
 from models import Committee, Constituency
-
+import math
 
 class ElectionCalculator:
     def __init__(self, committees, constituencies):
@@ -51,19 +51,24 @@ class ElectionCalculator:
             ]
 
             # Wybieramy odpowiednią metodę kalkulacji kwocjentów
-            if method == "dHondt":
-                quotients = self._calculate_quotients_dhondt(filtered_local_support, constituency.size)
-            elif method == "SainteLague":
-                quotients = self._calculate_quotients_saintelague(filtered_local_support, constituency.size)
+            if method == "dHondt" or method == "SainteLague":
+                if method == "dHondt":
+                    quotients = self._calculate_quotients_dhondt(filtered_local_support, constituency.size)
+                else:
+                    quotients = self._calculate_quotients_saintelague(filtered_local_support, constituency.size)
+                quotients.sort(key=lambda x: x['quotient'], reverse=True)
+                top_quotients = quotients[:constituency.size]
+                for quotient in top_quotients:
+                    mandates[quotient['committeeIndex']] += 1
+                    constituency.mandates[quotient['committeeIndex']] += 1
+            elif method == "HareNiemeyer":
+                committee_mandates = self._calculate_mandates_hereniemeyer(filtered_local_support, constituency.size)
+                for i, committee_mandate in enumerate(committee_mandates):
+                    mandates[i] += committee_mandate
+                    constituency.mandates[i] += committee_mandate
             else:
                 raise ValueError("Nieznana metoda: {}".format(method))
 
-            quotients.sort(key=lambda x: x['quotient'], reverse=True)
-            top_quotients = quotients[:constituency.size]
-            for quotient in top_quotients:
-                if quotient['quotient'] > 0:
-                    mandates[quotient['committeeIndex']] += 1
-                    constituency.mandates[quotient['committeeIndex']] += 1
         return mandates
 
     def _calculate_quotients_dhondt(self, support, size):
@@ -82,3 +87,29 @@ class ElectionCalculator:
                 quotient = support[committee_index] / divisor
                 quotients.append({'quotient': quotient, 'committeeIndex': committee_index})
         return quotients
+
+    def _calculate_mandates_hereniemeyer(self, support, size):
+        total_support = sum(support)
+        mandates = [0] * len(self.committees)
+        hare_quota = total_support / size
+        remainders = []
+        remaining_mandates = size
+
+        for i in range(len(self.committees)):
+            if support[i] > 0:
+                committee_mandates = int(support[i] / hare_quota)
+                mandates[i] = committee_mandates
+                remaining_mandates -= committee_mandates
+
+                remainder = (support[i] / hare_quota) - committee_mandates
+                remainders.append((i, remainder))
+        remainders.sort(key=lambda x: x[1], reverse=True)
+
+        for i in range(remaining_mandates):
+            if i < len(remainders):
+                committee_index = remainders[i][0]
+                mandates[committee_index] += 1
+
+        return mandates
+
+

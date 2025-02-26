@@ -115,7 +115,7 @@ class ElectionApp(QMainWindow):
             self.threshold_combos.append(threshold_combo)
 
         self.method_combo = QComboBox()  # [ZM]
-        self.method_combo.addItems(["dHondt", "SainteLague"])  # [ZM]
+        self.method_combo.addItems(["dHondt", "SainteLague", "HareNiemeyer"])  # [ZM]
         self.method_combo.currentIndexChanged.connect(lambda: self.update_mandates())  # [ZM]
         self.form_layout.addRow(QLabel("Metoda obliczania mandatów:"), self.method_combo)  # [ZM]
 
@@ -240,7 +240,7 @@ class ElectionApp(QMainWindow):
             self.donut_canvas.deleteLater()
             self.donut_canvas = None
 
-        fig, ax = plt.subplots(figsize=(5, 4), constrained_layout=True)
+        # fig, ax = plt.subplots(figsize=(5, 4), constrained_layout=True)
 
         short_name_mapping = {
             "Trzecia Droga": "TD",
@@ -250,9 +250,45 @@ class ElectionApp(QMainWindow):
             "Prawo i Sprawiedliwość": "PiS"
         }
 
+        color_mapping = {
+            "Trzecia Droga": "#FFFF00",  # Żółty
+            "Lewica": "#FF0000",  # Czerwony
+            "Konfederacja": "#8B4513",  # Granatowy
+            "Koalicja Obywatelska": "#FFA500",  # Brąz
+            "Prawo i Sprawiedliwość": "#000080",  # Pomarańczowy
+            "white": "white"  # Biały
+        }
+
+        preferred_order = [
+            "Prawo i Sprawiedliwość",
+            "Konfederacja",
+            "Trzecia Droga",
+            "Koalicja Obywatelska",
+            "Lewica"
+        ]
+
+        committees_dict = {c.name: i for i, c in enumerate(self.committees)}  # nazwa -> index w self.committees
+
+        data = []
+        labels = []
+        colors = []
+        total = 0
+
+        for party in preferred_order:
+            if party in committees_dict:
+                idx = committees_dict[party]
+                m = mandates[idx]
+                if m > 0:
+                    data.append(m)
+                    short_name = short_name_mapping.get(party, party)
+                    labels.append(f"{short_name} ({m})")
+                    colors.append(color_mapping[party])
+                    total += m
+
+        '''
         all_labels = [committee.name for committee in self.committees]
-        all_colors = ['#FFFF00', '#FF0000', '#000080', '#8B4513', '#FFA500']
-        all_explode = [0.1 if m > 0 else 0 for m in mandates]
+        all_colors = ['#FFFF00', '#FF0000', '#000080', '#8B4513', '#FFA500', 'white']
+        # all_explode = [0.1 if m > 0 else 0 for m in mandates]
 
         indices = [i for i, m in enumerate(mandates) if m > 0]
         labels = [
@@ -260,30 +296,41 @@ class ElectionApp(QMainWindow):
             for i in indices
         ]
         colors = [all_colors[i] for i in indices]
-        explode = [all_explode[i] for i in indices]
+        # explode = [all_explode[i] for i in indices]
         data = [mandates[i] for i in indices]
-
+        '
         def absolute_value(val, sizes):
             total = sum(sizes)
             idx = int(val / 100 * total + 0.5)
             return sizes[idx] if idx < len(sizes) else ""
-
+            
         wedges, texts, autotexts = ax.pie(
             data, explode=explode, labels=labels, colors=colors,
             autopct=lambda val: absolute_value(val, data), startangle=90,
             wedgeprops=dict(width=0.3, edgecolor='w')
         )
+        
         ax.axis('equal')
         for text in autotexts:
             text.set_color('white')
             text.set_fontsize(10)
             text.set_fontweight('bold')
-
-        ax.set_title("Podział mandatów")
+        '''
+        labels.append("")
+        colors.append("white")
+        data.append(total)
+        fig = plt.figure(figsize=(8, 6), dpi=100)
+        ax = fig.add_subplot(1, 1, 1)
+        ax.set_position([-0.025, -0.25, 1.1, 1.0])
+        fig.suptitle("Podział mandatów", y=0.9, fontsize=14)
+        ax.pie(data, labels=labels, colors=colors)
+        ax.add_artist(plt.Circle((0,0), 0.6, color='white'))
+        ax.axis('equal')
 
         self.donut_canvas = FigureCanvas(fig)
         self.donut_chart_layout.addWidget(self.donut_canvas)
         plt.close(fig)
+
 
     def show_bar_chart(self):
         if self.bar_canvas is not None:
